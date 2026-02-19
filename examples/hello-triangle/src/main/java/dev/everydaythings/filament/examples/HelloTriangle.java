@@ -19,8 +19,6 @@ package dev.everydaythings.filament.examples;
 import dev.everydaythings.filament.*;
 
 import org.lwjgl.glfw.*;
-import org.lwjgl.system.MemoryStack;
-import org.lwjgl.system.Platform;
 
 import java.io.IOException;
 import java.io.InputStream;

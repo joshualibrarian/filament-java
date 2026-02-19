@@ -88,6 +88,18 @@ public class Minimal {
 ./gradlew :examples:hello-gltf:run
 ```
 
+**hello-camera** — Interactive orbit camera around a glTF model (left-drag orbit, right-drag pan, scroll zoom):
+
+```bash
+./gradlew :examples:hello-camera:run
+```
+
+**hello-picking** — Object selection via `View.pick()` — click on colored cubes to highlight them:
+
+```bash
+./gradlew :examples:hello-picking:run
+```
+
 ## Building from Source
 
 ### Prerequisites
