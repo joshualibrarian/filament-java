@@ -27,6 +27,13 @@ val nativeArch: String = when {
     else -> osArch
 }
 
+// Map Gradle arch names to Filament SDK lib directory names
+val filamentArch: String = when (nativeArch) {
+    "arm64" -> "arm64"
+    "x64" -> "x86_64"
+    else -> nativeArch
+}
+
 val cmakeBuildDir = layout.buildDirectory.dir("cmake")
 val cmakeSourceDir = layout.projectDirectory.dir("src/main/cpp")
 val nativeLibDir = layout.buildDirectory.dir("natives/$nativePlatform-$nativeArch")
@@ -43,6 +50,7 @@ val cmakeConfigure by tasks.registering(Exec::class) {
         "cmake",
         "-DCMAKE_BUILD_TYPE=Release",
         "-DFILAMENT_SDK_DIR=$filamentSdkDir",
+        "-DFILAMENT_ARCH=$filamentArch",
         cmakeSourceDir.asFile.absolutePath
     )
     enabled = hasSdk
@@ -57,8 +65,19 @@ val cmakeBuild by tasks.registering(Exec::class) {
     enabled = hasSdk
 }
 
-tasks.named<Jar>("jar") {
+val copyNativeLib by tasks.registering(Copy::class) {
+    group = "native"
+    description = "Copy built native library to JAR packaging directory"
     dependsOn(cmakeBuild)
+    from(cmakeBuildDir) {
+        include("*.so", "*.dylib", "*.dll")
+    }
+    into(nativeLibDir)
+    enabled = hasSdk
+}
+
+tasks.named<Jar>("jar") {
+    dependsOn(copyNativeLib)
     from(nativeLibDir) {
         into("natives/$nativePlatform-$nativeArch")
     }

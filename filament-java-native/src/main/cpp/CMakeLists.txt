@@ -16,15 +16,38 @@ if(NOT DEFINED FILAMENT_SDK_DIR)
 endif()
 
 set(FILAMENT_INCLUDE_DIR "${FILAMENT_SDK_DIR}/include")
-set(FILAMENT_LIB_DIR "${FILAMENT_SDK_DIR}/lib/x86_64")
+
+# Detect library directory based on platform and architecture
+if(NOT DEFINED FILAMENT_ARCH)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+        set(FILAMENT_ARCH "arm64")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64|x64")
+        set(FILAMENT_ARCH "x86_64")
+    else()
+        message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+endif()
+
+# Windows SDK has CRT variant subdirectories (mt, md, mtd, mdd)
+if(WIN32)
+    set(FILAMENT_LIB_DIR "${FILAMENT_SDK_DIR}/lib/${FILAMENT_ARCH}/mt")
+else()
+    set(FILAMENT_LIB_DIR "${FILAMENT_SDK_DIR}/lib/${FILAMENT_ARCH}")
+endif()
 
 # --- Import Filament static libraries ---
 function(import_filament_lib NAME)
     add_library(${NAME} STATIC IMPORTED)
-    set_target_properties(${NAME} PROPERTIES IMPORTED_LOCATION
-            "${FILAMENT_LIB_DIR}/lib${NAME}.a")
+    if(WIN32)
+        set_target_properties(${NAME} PROPERTIES IMPORTED_LOCATION
+                "${FILAMENT_LIB_DIR}/${NAME}.lib")
+    else()
+        set_target_properties(${NAME} PROPERTIES IMPORTED_LOCATION
+                "${FILAMENT_LIB_DIR}/lib${NAME}.a")
+    endif()
 endfunction()
 
+# Core Filament libraries
 import_filament_lib(filament)
 import_filament_lib(filament-generatePrefilterMipmap)
 import_filament_lib(backend)
@@ -39,6 +62,17 @@ import_filament_lib(zstd)
 import_filament_lib(smol-v)
 import_filament_lib(bluevk)
 import_filament_lib(bluegl)
+
+# gltfio libraries
+import_filament_lib(gltfio)
+import_filament_lib(gltfio_core)
+import_filament_lib(stb)
+import_filament_lib(uberarchive)
+import_filament_lib(uberzlib)
+import_filament_lib(dracodec)
+import_filament_lib(basis_transcoder)
+import_filament_lib(ktxreader)
+import_filament_lib(mikktspace)
 
 # --- JNI source files ---
 set(JNI_SOURCES
@@ -79,6 +113,14 @@ set(JNI_SOURCES
     common/CallbackUtils.cpp
     common/NioUtils.cpp
     common/VirtualMachineEnv.cpp
+    # gltfio JNI sources
+    gltfio/AssetLoader.cpp
+    gltfio/FilamentAsset.cpp
+    gltfio/FilamentInstance.cpp
+    gltfio/Animator.cpp
+    gltfio/ResourceLoader.cpp
+    gltfio/UbershaderProvider.cpp
+    gltfio/MaterialKey.cpp
 )
 
 # --- Build the shared library ---
@@ -88,12 +130,20 @@ target_include_directories(filament-jni PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}             # for "common/..." includes from JNI .cpp files
     ${CMAKE_CURRENT_SOURCE_DIR}/common      # for CallbackUtils.cpp's #include "CallbackUtils.h"
     ${CMAKE_CURRENT_SOURCE_DIR}/include     # for private/backend/VirtualMachineEnv.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/gltfio      # for MaterialKey.h
     ${FILAMENT_INCLUDE_DIR}                 # Filament public headers
     ${JNI_INCLUDE_DIRS}                     # JNI headers
 )
 
-# Link order matters for static libraries
-target_link_libraries(filament-jni PRIVATE
+# Link order matters for static libraries.
+# GNU ld needs --start-group/--end-group to resolve circular deps.
+# macOS ld64 and MSVC handle circular deps automatically.
+set(FILAMENT_STATIC_LIBS
+    # gltfio
+    gltfio
+    gltfio_core
+    uberarchive
+    # Core Filament
     filament-generatePrefilterMipmap
     filament
     backend
@@ -108,10 +158,46 @@ target_link_libraries(filament-jni PRIVATE
     bluevk
     smol-v
     bluegl
-    # System libraries (Linux)
-    pthread
-    dl
-    # Filament SDK is built with Clang/libc++
-    c++
-    c++abi
+    # gltfio dependency libraries
+    stb
+    uberzlib
+    dracodec
+    basis_transcoder
+    ktxreader
+    mikktspace
 )
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(filament-jni PRIVATE
+        -Wl,--start-group ${FILAMENT_STATIC_LIBS} -Wl,--end-group)
+else()
+    target_link_libraries(filament-jni PRIVATE ${FILAMENT_STATIC_LIBS})
+endif()
+
+# Platform-specific system libraries
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(filament-jni PRIVATE
+        pthread
+        dl
+        c++
+        c++abi
+    )
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    target_link_libraries(filament-jni PRIVATE
+        c++
+        "-framework Cocoa"
+        "-framework Metal"
+        "-framework CoreVideo"
+        "-framework IOKit"
+        "-framework IOSurface"
+        "-framework QuartzCore"
+    )
+elseif(WIN32)
+    target_link_libraries(filament-jni PRIVATE
+        shlwapi
+        user32
+        gdi32
+        opengl32
+        Dwmapi
+    )
+endif()

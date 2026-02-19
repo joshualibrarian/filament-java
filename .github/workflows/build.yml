@@ -1,0 +1,73 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  FILAMENT_VERSION: "1.69.2"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            sdk-file: filament-v1.69.2-linux.tgz
+          - os: macos-latest
+            platform: mac
+            sdk-file: filament-v1.69.2-mac.tgz
+          - os: windows-latest
+            platform: windows
+            sdk-file: filament-v1.69.2-windows.tgz
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.platform }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libc++-dev libc++abi-dev
+
+      - name: Download Filament SDK
+        shell: bash
+        run: |
+          curl -L -o filament-sdk.tgz \
+            "https://github.com/google/filament/releases/download/v${FILAMENT_VERSION}/${{ matrix.sdk-file }}"
+
+      - name: Extract Filament SDK
+        shell: bash
+        run: |
+          mkdir -p filament-sdk
+          tar xzf filament-sdk.tgz -C filament-sdk --strip-components=1
+
+      - name: Build
+        uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew build
+        shell: bash
+
+      - name: Verify native JAR contents
+        shell: bash
+        run: |
+          echo "=== Native JAR contents ==="
+          jar tf filament-java-native/build/libs/*.jar | grep natives || echo "No natives found"
+
+      - name: Upload native JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: filament-java-native-${{ matrix.platform }}
+          path: filament-java-native/build/libs/*.jar
