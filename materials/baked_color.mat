@@ -1,0 +1,13 @@
+material {
+    name : baked_color,
+    requires : [color],
+    shadingModel : unlit,
+    featureLevel : 0
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = getColor();
+    }
+}
