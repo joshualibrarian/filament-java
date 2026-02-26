@@ -72,6 +72,7 @@ public class Minimal {
 | `filament-java-core` | Java API — 40 wrapper classes (Engine, Renderer, Scene, View, Camera, Material, etc.) |
 | `filament-java-native` | JNI C++ bridge + native library (`libfilament-jni.so` / `.dylib` / `.dll`) |
 | `filament-java-gltfio` | glTF 2.0 model loading (AssetLoader, ResourceLoader, Animator) |
+| `filament-java-text` | MSDF text rendering (MsdfAtlas, MsdfFontManager, MsdfTextRenderer) |
 | `filament-java-lwjgl` | GLFW windowing integration via LWJGL |
 
 ## Examples
@@ -158,6 +159,7 @@ Your Application
     |
     +-- filament-java-core      (Java API)
     +-- filament-java-gltfio    (glTF loading, optional)
+    +-- filament-java-text      (MSDF text rendering, optional)
     +-- filament-java-lwjgl     (GLFW windowing)
     +-- filament-java-native    (JNI bridge -> libfilament-jni -> Filament C++)
             |
@@ -168,7 +170,7 @@ The JNI sources originate from Filament's Android bindings (`android/filament-an
 
 ## Status
 
-This project is in early development. The core rendering API works on Linux with Vulkan. glTF model loading works. macOS and Windows builds are set up in CI but not yet runtime-tested.
+This project is in early development. The core rendering API works on Linux with Vulkan. glTF model loading and MSDF text rendering work. macOS and Windows builds are set up in CI but not yet runtime-tested.
 
 Contributions and bug reports are welcome.
 
