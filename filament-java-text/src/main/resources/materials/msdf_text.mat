@@ -1,0 +1,46 @@
+material {
+    name : msdf_text,
+    parameters : [
+        { type : sampler2d, name : msdfAtlas },
+        { type : float, name : pxRange },
+        { type : float2, name : atlasSize },
+        { type : float, name : screenPxRange }
+    ],
+    requires : [uv0, color],
+    shadingModel : unlit,
+    blending : transparent,
+    doubleSided : true
+}
+
+fragment {
+    float median(float r, float g, float b) {
+        return max(min(r, g), min(max(r, g), b));
+    }
+
+    // Filament vertex colors arrive as raw byte/255 values (sRGB space).
+    // Filament expects baseColor in LINEAR space. Convert.
+    vec3 srgbToLinear(vec3 c) {
+        // Approximate sRGB→linear (exact formula has a linear segment below 0.04045
+        // but pow(2.2) is close enough and cheaper).
+        return pow(c, vec3(2.2));
+    }
+
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+
+        vec2 uv = getUV0();
+        vec4 mtsdf = texture(materialParams_msdfAtlas, uv);
+
+        float d = median(mtsdf.r, mtsdf.g, mtsdf.b);
+
+        float spr = materialParams.screenPxRange;
+        float boldBias = 0.12;
+        float screenPxDist = spr * (d - 0.5 + boldBias);
+        float opacity = clamp(screenPxDist + 0.5, 0.0, 1.0);
+
+        vec4 textColor = getColor();
+        vec3 linearRGB = srgbToLinear(textColor.rgb);
+        float a = textColor.a * opacity;
+        material.baseColor = vec4(linearRGB * a, a);
+    }
+}

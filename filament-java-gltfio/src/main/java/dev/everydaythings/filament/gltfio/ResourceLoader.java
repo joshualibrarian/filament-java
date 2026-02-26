@@ -19,8 +19,6 @@ package dev.everydaythings.filament.gltfio;
 
 import dev.everydaythings.filament.Engine;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.nio.Buffer;
 
 /**
@@ -42,8 +40,6 @@ public class ResourceLoader {
      * Constructs a resource loader tied to the given Filament engine.
      *
      * @param engine the engine that gets passed to all builder methods
-     * @throws IllegalAccessException
-     * @throws InvocationTargetException
      */
     public ResourceLoader(Engine engine) {
         long nativeEngine = engine.getNativeObject();
@@ -68,8 +64,6 @@ public class ResourceLoader {
      *
      * @param engine the engine that gets passed to all builder methods
      * @param normalizeSkinningWeights scale non-conformant skinning weights so they sum to 1
-     * @throws IllegalAccessException
-     * @throws InvocationTargetException
      */
     public ResourceLoader(Engine engine, boolean normalizeSkinningWeights) {
         long nativeEngine = engine.getNativeObject();

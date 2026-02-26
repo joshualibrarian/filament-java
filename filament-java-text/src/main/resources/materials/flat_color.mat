@@ -1,0 +1,20 @@
+material {
+    name : flat_color,
+    requires : [color],
+    shadingModel : unlit,
+    blending : transparent,
+    doubleSided : true
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+
+        vec4 c = getColor();
+        // Vertex colors are sRGB bytes; Filament baseColor expects linear.
+        c.rgb = pow(c.rgb, vec3(2.2));
+        // Premultiplied alpha (required by blending : transparent).
+        c.rgb *= c.a;
+        material.baseColor = c;
+    }
+}
