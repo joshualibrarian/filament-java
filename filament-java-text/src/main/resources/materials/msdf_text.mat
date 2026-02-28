@@ -17,14 +17,6 @@ fragment {
         return max(min(r, g), min(max(r, g), b));
     }
 
-    // Filament vertex colors arrive as raw byte/255 values (sRGB space).
-    // Filament expects baseColor in LINEAR space. Convert.
-    vec3 srgbToLinear(vec3 c) {
-        // Approximate sRGB→linear (exact formula has a linear segment below 0.04045
-        // but pow(2.2) is close enough and cheaper).
-        return pow(c, vec3(2.2));
-    }
-
     void material(inout MaterialInputs material) {
         prepareMaterial(material);
 
@@ -39,8 +31,7 @@ fragment {
         float opacity = clamp(screenPxDist + 0.5, 0.0, 1.0);
 
         vec4 textColor = getColor();
-        vec3 linearRGB = srgbToLinear(textColor.rgb);
         float a = textColor.a * opacity;
-        material.baseColor = vec4(linearRGB * a, a);
+        material.baseColor = vec4(textColor.rgb * a, a);
     }
 }

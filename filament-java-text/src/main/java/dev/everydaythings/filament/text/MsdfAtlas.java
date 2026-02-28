@@ -9,11 +9,16 @@ import org.lwjgl.util.msdfgen.*;
 
 import org.lwjgl.util.freetype.FreeType;
 import org.lwjgl.util.freetype.FT_Face;
+import org.lwjgl.util.freetype.FT_LayerIterator;
+import org.lwjgl.util.freetype.FT_Palette_Data;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.DoubleBuffer;
+import java.nio.IntBuffer;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -80,6 +85,8 @@ public class MsdfAtlas {
     // ==================================================================================
 
     private final Map<Integer, GlyphMetrics> glyphs = new HashMap<>();
+    /** Glyph metrics keyed by glyph INDEX (for COLRv0 layer glyphs). */
+    private final Map<Integer, GlyphMetrics> glyphsByIndex = new HashMap<>();
     private Texture texture;
 
     /** Atlas pixel data (RGBA, 4 bytes per pixel). */
@@ -109,6 +116,12 @@ public class MsdfAtlas {
     private double ascent = 0.8;
 
     private double lineHeight = 1.0;
+
+    /** Whether this font has a COLRv0 color table. */
+    private boolean hasColorTable;
+
+    /** CPAL palette colors (ARGB), indexed by color_index from COLR layer records. */
+    private int[] paletteColors;
 
     // ==================================================================================
     // Factory
@@ -197,6 +210,12 @@ public class MsdfAtlas {
                     lineHeight = (double) ftFace.height() / unitsPerEm;
                     log.info(() -> String.format("Font metrics: unitsPerEm=%.0f, ascent=%.3f, lineHeight=%.3f",
                             unitsPerEm, ascent, lineHeight));
+
+                    // Check for COLRv0 color table and load CPAL palette
+                    hasColorTable = FreeType.FT_HAS_COLOR(ftFace);
+                    if (hasColorTable) {
+                        loadPalette();
+                    }
                 }
                 fontDataBuffer.rewind();
             }
@@ -543,6 +562,261 @@ public class MsdfAtlas {
     }
 
     // ==================================================================================
+    // COLRv0 Color Layer Support
+    // ==================================================================================
+
+    /**
+     * Load CPAL palette 0 into {@link #paletteColors}.
+     * Called during init when FT_HAS_COLOR is true.
+     */
+    private void loadPalette() {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            FT_Palette_Data paletteData = FT_Palette_Data.calloc(stack);
+            int dataResult = FreeType.FT_Palette_Data_Get(ftFace, paletteData);
+            if (dataResult != 0) {
+                log.warning(() -> "FT_Palette_Data_Get failed: " + dataResult);
+                hasColorTable = false;
+                return;
+            }
+
+            int numEntries = paletteData.num_palette_entries() & 0xFFFF;
+            if (numEntries == 0) {
+                hasColorTable = false;
+                return;
+            }
+
+            // Select palette 0 — returns pointer to array of FT_Color
+            PointerBuffer palettePtr = stack.mallocPointer(1);
+            int selectResult = FreeType.FT_Palette_Select(ftFace, (short) 0, palettePtr);
+            if (selectResult != 0) {
+                log.warning(() -> "FT_Palette_Select failed: " + selectResult);
+                hasColorTable = false;
+                return;
+            }
+
+            // Read FT_Color array (each entry is 4 bytes: BGRA)
+            long paletteAddr = palettePtr.get(0);
+            paletteColors = new int[numEntries];
+            for (int i = 0; i < numEntries; i++) {
+                // FT_Color is { blue, green, red, alpha } — 1 byte each
+                long addr = paletteAddr + (long) i * 4;
+                int b = org.lwjgl.system.MemoryUtil.memGetByte(addr) & 0xFF;
+                int g = org.lwjgl.system.MemoryUtil.memGetByte(addr + 1) & 0xFF;
+                int r = org.lwjgl.system.MemoryUtil.memGetByte(addr + 2) & 0xFF;
+                int a = org.lwjgl.system.MemoryUtil.memGetByte(addr + 3) & 0xFF;
+                paletteColors[i] = (a << 24) | (r << 16) | (g << 8) | b;
+            }
+
+            log.info(() -> String.format("Loaded CPAL palette: %d entries", numEntries));
+        }
+    }
+
+    /**
+     * Get the COLRv0 color layers for a codepoint.
+     *
+     * @return color layer info, or null if this codepoint has no color layers
+     */
+    public ColrGlyphInfo getColorLayers(int codepoint) {
+        if (!hasColorTable || ftFace == null || paletteColors == null) return null;
+
+        // Get the base glyph index for this codepoint
+        int baseGlyphIndex = (int) FreeType.FT_Get_Char_Index(ftFace, codepoint);
+        if (baseGlyphIndex == 0) return null;
+
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            IntBuffer glyphIndexBuf = stack.mallocInt(1);
+            IntBuffer colorIndexBuf = stack.mallocInt(1);
+            FT_LayerIterator iterator = FT_LayerIterator.calloc(stack);
+
+            List<ColrGlyphInfo.Layer> layers = new ArrayList<>();
+            while (FreeType.FT_Get_Color_Glyph_Layer(ftFace, baseGlyphIndex,
+                    glyphIndexBuf, colorIndexBuf, iterator)) {
+                int layerGlyphIndex = glyphIndexBuf.get(0);
+                int colorIndex = colorIndexBuf.get(0) & 0xFFFF;
+
+                int argbColor;
+                if (colorIndex == 0xFFFF) {
+                    // Foreground color sentinel
+                    argbColor = ColrGlyphInfo.FOREGROUND_COLOR;
+                } else if (colorIndex < paletteColors.length) {
+                    argbColor = paletteColors[colorIndex];
+                } else {
+                    argbColor = 0xFF000000; // fallback: opaque black
+                }
+
+                layers.add(new ColrGlyphInfo.Layer(layerGlyphIndex, argbColor));
+            }
+
+            return layers.isEmpty() ? null : new ColrGlyphInfo(List.copyOf(layers));
+        }
+    }
+
+    /**
+     * Generate MSDF for a glyph by its glyph INDEX (not codepoint).
+     * Used for COLRv0 layer glyphs that are referenced by index.
+     *
+     * @return metrics for the generated glyph, or null on failure
+     */
+    public GlyphMetrics generateGlyphByIndex(int glyphIndex) {
+        if (glyphsByIndex.containsKey(glyphIndex)) return glyphsByIndex.get(glyphIndex);
+        if (fontHandle == 0) return null;
+
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            DoubleBuffer advanceBuf = stack.mallocDouble(1);
+            PointerBuffer shapePtr = stack.mallocPointer(1);
+
+            int result = msdf_ft_font_load_glyph_by_index(
+                    fontHandle, glyphIndex, MSDF_FONT_SCALING_NONE,
+                    advanceBuf, shapePtr);
+
+            if (result != MSDF_SUCCESS) return null;
+
+            long shape = shapePtr.get(0);
+            double advance = advanceBuf.get(0);
+
+            try {
+                msdf_shape_normalize(shape);
+                msdf_shape_edge_colors_simple(shape, 3.0);
+
+                MSDFGenBounds bounds = MSDFGenBounds.calloc(stack);
+                msdf_shape_get_bounds(shape, bounds);
+
+                double l = bounds.l(), b = bounds.b(), r = bounds.r(), t = bounds.t();
+
+                if (r <= l || t <= b) {
+                    var metrics = new GlyphMetrics(
+                            glyphIndex, advance / unitsPerEm, 0, 0, 0, 0, 0, 0, 0, 0);
+                    glyphsByIndex.put(glyphIndex, metrics);
+                    return metrics;
+                }
+
+                double padding = PX_RANGE;
+                double shapeW = r - l;
+                double shapeH = t - b;
+                double scale = (GLYPH_SIZE - 2 * padding) / Math.max(shapeW, shapeH);
+                double translateX = GLYPH_SIZE / (2.0 * scale) - (l + r) / 2.0;
+                double translateY = GLYPH_SIZE / (2.0 * scale) - (b + t) / 2.0;
+
+                double rangeInFontUnits = PX_RANGE / scale;
+                MSDFGenTransform transform = MSDFGenTransform.calloc(stack);
+                transform.scale(v -> v.x(scale).y(scale));
+                transform.translation(v -> v.x(translateX).y(translateY));
+                transform.distance_mapping(dm -> dm.lower(-rangeInFontUnits).upper(rangeInFontUnits));
+
+                MSDFGenBitmap bitmap = MSDFGenBitmap.calloc(stack);
+                result = msdf_bitmap_alloc(MSDF_BITMAP_TYPE_MTSDF, GLYPH_SIZE, GLYPH_SIZE, bitmap);
+                if (result != MSDF_SUCCESS) return null;
+
+                try {
+                    result = msdf_generate_mtsdf(bitmap, shape, transform);
+                    if (result != MSDF_SUCCESS) return null;
+
+                    msdf_error_correction(bitmap, shape, transform);
+
+                    PointerBuffer pixelsPtr = stack.mallocPointer(1);
+                    msdf_bitmap_get_pixels(bitmap, pixelsPtr);
+                    long pixelsAddr = pixelsPtr.get(0);
+
+                    var metrics = copyGlyphToAtlasByIndex(pixelsAddr, glyphIndex,
+                            l, b, r, t, advance, scale, translateX, translateY);
+                    glyphsByIndex.put(glyphIndex, metrics);
+                    return metrics;
+                } finally {
+                    msdf_bitmap_free(bitmap);
+                }
+            } finally {
+                msdf_shape_free(shape);
+            }
+        }
+    }
+
+    /**
+     * Copy a glyph-by-index into the atlas and return its metrics.
+     * Similar to {@link #copyGlyphToAtlas} but stores in {@link #glyphsByIndex}.
+     */
+    private GlyphMetrics copyGlyphToAtlasByIndex(long pixelsAddr, int glyphIndex,
+                                                  double shapeL, double shapeB,
+                                                  double shapeR, double shapeT,
+                                                  double advance, double scale,
+                                                  double translateX, double translateY) {
+        int slot = nextSlot++;
+        int slotX = (slot % glyphsPerRow) * GLYPH_SIZE;
+        int slotY = (slot / glyphsPerRow) * GLYPH_SIZE;
+
+        for (int y = 0; y < GLYPH_SIZE; y++) {
+            for (int x = 0; x < GLYPH_SIZE; x++) {
+                int srcIdx = (y * GLYPH_SIZE + x) * 4;
+                long srcAddr = pixelsAddr + (long) srcIdx * Float.BYTES;
+
+                float fr = floatFromAddr(srcAddr);
+                float fg = floatFromAddr(srcAddr + Float.BYTES);
+                float fb = floatFromAddr(srcAddr + 2L * Float.BYTES);
+                float fa = floatFromAddr(srcAddr + 3L * Float.BYTES);
+
+                byte br = (byte)(Math.max(0f, Math.min(1f, fr)) * 255 + 0.5f);
+                byte bg = (byte)(Math.max(0f, Math.min(1f, fg)) * 255 + 0.5f);
+                byte bb = (byte)(Math.max(0f, Math.min(1f, fb)) * 255 + 0.5f);
+                byte ba = (byte)(Math.max(0f, Math.min(1f, fa)) * 255 + 0.5f);
+
+                int atlasY = slotY + (GLYPH_SIZE - 1 - y);
+                int atlasX = slotX + x;
+                int dstIdx = (atlasY * atlasWidth + atlasX) * 4;
+
+                if (dstIdx + 3 < atlasPixels.length) {
+                    atlasPixels[dstIdx] = br;
+                    atlasPixels[dstIdx + 1] = bg;
+                    atlasPixels[dstIdx + 2] = bb;
+                    atlasPixels[dstIdx + 3] = ba;
+                }
+            }
+        }
+
+        double emScale = 1.0 / unitsPerEm;
+        double pxPadInShape = PX_RANGE / scale;
+        double tightL = shapeL - pxPadInShape, tightR = shapeR + pxPadInShape;
+        double tightB = shapeB - pxPadInShape, tightT = shapeT + pxPadInShape;
+
+        double planeL = tightL * emScale, planeR = tightR * emScale;
+        double planeB = tightB * emScale, planeT = tightT * emScale;
+
+        double bmpL = Math.max(0, scale * (tightL + translateX));
+        double bmpR = Math.min(GLYPH_SIZE, scale * (tightR + translateX));
+        double bmpB = Math.max(0, scale * (tightB + translateY));
+        double bmpT = Math.min(GLYPH_SIZE, scale * (tightT + translateY));
+
+        double halfTexelX = 0.5 / atlasWidth;
+        double halfTexelY = 0.5 / atlasHeight;
+        double uvL = (slotX + bmpL) / atlasWidth + halfTexelX;
+        double uvR = (slotX + bmpR) / atlasWidth - halfTexelX;
+        double uvTop = (slotY + (GLYPH_SIZE - bmpT)) / atlasHeight + halfTexelY;
+        double uvBottom = (slotY + (GLYPH_SIZE - bmpB)) / atlasHeight - halfTexelY;
+
+        return new GlyphMetrics(glyphIndex, advance * emScale,
+                planeL, planeB, planeR, planeT, uvL, uvBottom, uvR, uvTop);
+    }
+
+    /** Get metrics for a glyph by index, or null if not generated. */
+    public GlyphMetrics glyphByIndex(int glyphIndex) {
+        return glyphsByIndex.get(glyphIndex);
+    }
+
+    /** Whether this font has a COLRv0 color table. */
+    public boolean hasColorTable() {
+        return hasColorTable;
+    }
+
+    /**
+     * Force re-upload of the atlas texture to Filament.
+     * Call after generating layer glyphs via {@link #generateGlyphByIndex(int)}.
+     */
+    public void reuploadTexture(Engine engine) {
+        if (texture != null) {
+            engine.destroyTexture(texture);
+        }
+        uploadTexture(engine);
+    }
+
+    // ==================================================================================
     // Queries
     // ==================================================================================
 
@@ -634,5 +908,6 @@ public class MsdfAtlas {
         fontDataBuffer = null;
         atlasPixels = null;
         glyphs.clear();
+        glyphsByIndex.clear();
     }
 }

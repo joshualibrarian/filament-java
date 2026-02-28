@@ -11,8 +11,6 @@ fragment {
         prepareMaterial(material);
 
         vec4 c = getColor();
-        // Vertex colors are sRGB bytes; Filament baseColor expects linear.
-        c.rgb = pow(c.rgb, vec3(2.2));
         // Premultiplied alpha (required by blending : transparent).
         c.rgb *= c.a;
         material.baseColor = c;

@@ -31,12 +31,26 @@ public class MsdfFontManager {
     private final List<MsdfAtlas> fallbackChain = new ArrayList<>();
 
     /**
-     * A resolved glyph: the atlas it came from + the metrics.
+     * A resolved glyph: the atlas it came from + the metrics + optional color info.
      * Needed because different glyphs may come from different atlases
      * (different textures), so the painter needs to know which atlas
      * to bind for each glyph quad.
+     *
+     * <p>For COLRv0 color emoji, {@code colorInfo} is non-null and contains
+     * the layer decomposition with per-layer palette colors.
      */
-    public record ResolvedGlyph(MsdfAtlas atlas, MsdfAtlas.GlyphMetrics metrics) {}
+    public record ResolvedGlyph(MsdfAtlas atlas, MsdfAtlas.GlyphMetrics metrics,
+                                ColrGlyphInfo colorInfo) {
+        /** Convenience constructor for monochrome glyphs. */
+        public ResolvedGlyph(MsdfAtlas atlas, MsdfAtlas.GlyphMetrics metrics) {
+            this(atlas, metrics, null);
+        }
+
+        /** Whether this glyph has COLRv0 color layers. */
+        public boolean isColor() {
+            return colorInfo != null && colorInfo.isColor();
+        }
+    }
 
     public MsdfFontManager(Engine engine) {
         this.engine = engine;
@@ -106,6 +120,13 @@ public class MsdfFontManager {
             log.info("Fallback: bundled Symbols Nerd Font Mono");
         }
 
+        // Color emoji: Twemoji COLRv0 (vector color layers, works with MSDF)
+        byte[] twemojiData = loadResource("fonts/Twemoji.Mozilla.ttf");
+        if (twemojiData != null) {
+            registerFont("emoji-color", twemojiData);
+            log.info("Fallback: bundled Twemoji COLRv0 color emoji");
+        }
+
         // Emoji fallback: Symbola has TrueType outline glyphs for standard
         // Unicode emoji, unlike NotoColorEmoji which is bitmap.
         String[] emojiFallbackPaths = {
@@ -161,7 +182,7 @@ public class MsdfFontManager {
             // Check if already generated
             MsdfAtlas.GlyphMetrics g = atlas.glyph(codepoint);
             if (g != null) {
-                return new ResolvedGlyph(atlas, g);
+                return resolveWithColorInfo(atlas, g, codepoint);
             }
         }
 
@@ -170,11 +191,43 @@ public class MsdfFontManager {
             atlas.ensureGlyphs(engine, new String(Character.toChars(codepoint)));
             MsdfAtlas.GlyphMetrics g = atlas.glyph(codepoint);
             if (g != null) {
-                return new ResolvedGlyph(atlas, g);
+                return resolveWithColorInfo(atlas, g, codepoint);
             }
         }
 
         return null;
+    }
+
+    /**
+     * Attach COLRv0 color layer info to a resolved glyph if the atlas supports it.
+     * Also ensures all layer glyph MSDF images are generated in the atlas.
+     */
+    private ResolvedGlyph resolveWithColorInfo(MsdfAtlas atlas, MsdfAtlas.GlyphMetrics metrics,
+                                                int codepoint) {
+        if (!atlas.hasColorTable()) {
+            return new ResolvedGlyph(atlas, metrics);
+        }
+
+        ColrGlyphInfo colorInfo = atlas.getColorLayers(codepoint);
+        if (colorInfo == null || !colorInfo.isColor()) {
+            return new ResolvedGlyph(atlas, metrics);
+        }
+
+        // Ensure all layer glyphs are generated in the atlas
+        boolean needsReupload = false;
+        for (ColrGlyphInfo.Layer layer : colorInfo.layers()) {
+            if (atlas.glyphByIndex(layer.glyphIndex()) == null) {
+                atlas.generateGlyphByIndex(layer.glyphIndex());
+                needsReupload = true;
+            }
+        }
+
+        // Re-upload atlas texture if new layer glyphs were generated
+        if (needsReupload) {
+            atlas.reuploadTexture(engine);
+        }
+
+        return new ResolvedGlyph(atlas, metrics, colorInfo);
     }
 
     /**
