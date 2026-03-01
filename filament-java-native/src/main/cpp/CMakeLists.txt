@@ -31,6 +31,8 @@ endif()
 # Windows SDK has CRT variant subdirectories (mt, md, mtd, mdd)
 if(WIN32)
     set(FILAMENT_LIB_DIR "${FILAMENT_SDK_DIR}/lib/${FILAMENT_ARCH}/mt")
+    # Match Filament's static CRT (/MT) to avoid LNK2038 runtime library mismatch
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
     set(FILAMENT_LIB_DIR "${FILAMENT_SDK_DIR}/lib/${FILAMENT_ARCH}")
 endif()
